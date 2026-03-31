@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data (large files - don't commit)
+data/raw/*.json
+data/raw/*.jsonl
+data/processed/*.json
+data/processed/*.jsonl
+data/triples/*.json
+data/graph/*.graphml
+data/graph/*.pkl
+
+# Outputs
+outputs/*.html
+outputs/*.csv
+outputs/figures/*.png
+outputs/figures/*.pdf
+
+# Config with secrets
+# Keep config.yaml in git but NEVER commit real API keys
+# Use environment variables or a .env file instead
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
