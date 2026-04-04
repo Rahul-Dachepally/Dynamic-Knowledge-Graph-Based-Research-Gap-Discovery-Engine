@@ -13,6 +13,7 @@ import networkx as nx
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
+from pykeen import triples
 from tqdm import tqdm
 from fuzzywuzzy import fuzz
 from sentence_transformers import SentenceTransformer
@@ -170,6 +171,15 @@ def build_knowledge_graph(config):
     min_conf = graph_config["min_edge_confidence"]
     triples = [t for t in triples if t.get("confidence", 0) >= min_conf]
     logger.info(f"After confidence filter (>={min_conf}): {len(triples)} triples")
+
+    # Filter out-of-vocabulary relations
+    VALID_RELATIONS = {
+        "USES", "IMPROVES", "ADDRESSES", "EVALUATES_ON",
+        "PRODUCES", "CONTRADICTS", "EXTENDS", "LACKS",
+        "COMBINES", "APPLIED_TO"
+    }
+    triples = [t for t in triples if t.get("relation") in VALID_RELATIONS]
+    logger.info(f"After relation filter: {len(triples)} triples")
     
     # --- Step 1: Build entity index ---
     entities = build_entity_index(triples)

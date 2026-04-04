@@ -61,8 +61,11 @@ def detect_missing_links(G, config):
     tf = TriplesFactory.from_labeled_triples(triples_array)
     
     # Train TransE model
+    training, testing = tf.split(ratios=[0.8, 0.2], random_state=42)
+
     result = pykeen_pipeline(
-        training=tf,
+        training=training,
+        testing=testing,
         model="TransE",
         model_kwargs={
             "embedding_dim": transE_config["embedding_dim"],
@@ -86,8 +89,8 @@ def detect_missing_links(G, config):
     # Get all existing edges as a set for fast lookup
     existing_edges = set()
     for u, v, data in G.edges(data=True):
-        for rel in set(d.get("relation", "RELATED") for _, _, d in G.edges(u, v, data=True)):
-            existing_edges.add((str(u), str(rel), str(v)))
+        rel = data.get("relation", "RELATED")
+        existing_edges.add((str(u), str(rel), str(v)))
     
     # Score all possible triples and find the best missing ones
     all_nodes = list(G.nodes())

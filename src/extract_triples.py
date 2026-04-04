@@ -11,8 +11,8 @@ Usage:
 import json
 import time
 from pathlib import Path
-from tqdm import tqdm
-from openai import OpenAI
+from tqdm import tqdm 
+from openai import OpenAI 
 from src.utils import (
     get_logger, save_json, load_json, save_jsonl, load_jsonl,
     ensure_dir, chunk_text, clean_text
@@ -33,12 +33,10 @@ def extract_triples_from_text(client, model, prompt_template, domain, title, yea
     Extract triples from a single text chunk.
     Returns list of triple dicts.
     """
-    prompt = prompt_template.format(
-        domain=domain,
-        title=title,
-        year=year,
-        text_chunk=text,
-    )
+    prompt = prompt_template.replace("{domain}", str(domain))\
+                        .replace("{title}", str(title))\
+                        .replace("{year}", str(year))\
+                        .replace("{text_chunk}", str(text))
     
     try:
         response = client.chat.completions.create(
@@ -167,7 +165,10 @@ def extract_all_triples(config):
     prompt_template = load_extraction_prompt(config["paths"]["prompts"])
     
     # Initialise OpenAI client
-    client = OpenAI(api_key=config["api_keys"]["openai"])
+    client = OpenAI(
+        api_key=config["api_keys"]["groq"],
+        base_url="https://api.groq.com/openai/v1"
+        )
     
     # --- Check for existing progress ---
     progress_path = triples_dir / "extraction_progress.json"
@@ -267,7 +268,7 @@ def extract_all_triples(config):
 
 
 if __name__ == "__main__":
-    import yaml
+    import yaml # type: ignore
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
     extract_all_triples(config)
