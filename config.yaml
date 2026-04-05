@@ -1,0 +1,129 @@
+# ============================================
+# KG Gap Discovery - Configuration
+# ============================================
+# Copy this file and edit with your settings.
+# Do NOT commit API keys to version control.
+# ============================================
+
+# --- Project Info ---
+project:
+  name: "KG Gap Discovery Engine"
+  domain: "Explainable AI (XAI)"
+  version: "0.1.0"
+
+# --- API Keys ---
+api_keys:
+          # Get free key at console.groq.com
+  semantic_scholar: ""                      # Optional - works without key (rate limited)
+
+# --- Data Collection (Stage 1) ---
+collection:
+  # Semantic Scholar search queries
+  queries:
+    - "explainable artificial intelligence"
+    - "explainable AI"
+    - "XAI"
+    - "interpretable machine learning"
+    - "model interpretability"
+  year_range: [2019, 2025]
+  max_papers: 1000                   # Max papers to fetch initially
+  min_citation_count: 0              # Filter: minimum citations
+  fields_of_study: ["Computer Science"]
+
+  # Rate limiting (Semantic Scholar allows 100 req/5 min without key)
+  delay_between_requests: 5          # Increased from 3.5 to reduce API pressure
+
+# --- Filtering (Stage 1 continued) ---
+filtering:
+  # After collection, filter to final corpus
+  target_corpus_size: 150            # Final number of papers to keep
+  require_abstract: true             # Must have abstract
+  min_abstract_length: 100           # Minimum abstract word count
+
+  # LLM-based relevance screening
+  relevance_model: "llama-3.1-8b-instant"   # Groq hosted Llama
+  relevance_threshold: 0.7           # Minimum relevance score (0-1)
+
+# --- Triple Extraction (Stage 2) ---
+extraction:
+  model: "llama-3.1-8b-instant"      # Groq hosted Llama
+  max_tokens: 2000                   # Max response tokens
+  temperature: 0.1                   # Low temp for consistency
+  triples_per_chunk: [5, 15]         # Min/max triples per chunk
+  chunk_size: 1500                   # Words per text chunk
+  chunk_overlap: 200                 # Overlap between chunks
+
+  # Controlled vocabulary
+  entity_types:
+    - METHOD
+    - DATASET
+    - METRIC
+    - CONCEPT
+    - FINDING
+    - TOOL
+
+  relationship_types:
+    - USES
+    - IMPROVES
+    - ADDRESSES
+    - EVALUATES_ON
+    - PRODUCES
+    - CONTRADICTS
+    - EXTENDS
+    - LACKS
+    - COMBINES
+    - APPLIED_TO
+
+# --- Knowledge Graph Construction (Stage 3) ---
+graph:
+  # Entity deduplication thresholds
+  fuzzy_match_threshold: 85          # FuzzyWuzzy score (0-100)
+  semantic_similarity_threshold: 0.85 # Sentence-BERT cosine sim (0-1)
+  embedding_model: "all-MiniLM-L6-v2" # Sentence-BERT model
+  min_edge_confidence: 0.3           # Drop triples below this confidence
+
+# --- Gap Detection (Stage 4) ---
+gap_detection:
+  # Missing Link Prediction (TransE)
+  transE:
+    embedding_dim: 128
+    learning_rate: 0.01
+    num_epochs: 100                  # Reduced from 500 for speed on CPU
+    top_k_predictions: 50            # Top predicted missing links
+
+  # Orphan Cluster Detection
+  orphan:
+    min_cluster_ratio: 0.05          # Flag clusters < 5% of total nodes
+    max_inter_cluster_edge_ratio: 0.1 # Flag if bridge edges < 10%
+
+  # Temporal Decay Analysis
+  temporal:
+    window_years: 2                  # Annual windows (increased from 1)
+    decay_threshold: 0.3             # Flag if activity drops > 30% (reduced from 0.5)
+    lookback_years: 2                # Compare last N years (reduced from 3)
+
+# --- Gap Scoring (Stage 5) ---
+scoring:
+  weights:
+    centrality: 0.25
+    cluster_isolation: 0.25
+    temporal_decay: 0.25
+    prediction_confidence: 0.25
+  top_k_gaps: 30                     # Final number of gaps to present
+
+# --- Visualisation ---
+visualisation:
+  graph_layout: "force_atlas"        # pyvis layout algorithm
+  node_size_by: "degree"             # Size nodes by degree centrality
+  highlight_gaps: true               # Highlight detected gaps in red
+  output_format: "html"              # Interactive HTML output
+
+# --- Paths (relative to project root) ---
+paths:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  triples: "data/triples"
+  graph: "data/graph"
+  outputs: "outputs"
+  figures: "outputs/figures"
+  prompts: "prompts"

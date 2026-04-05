@@ -11,6 +11,8 @@ Usage:
 from curses import raw
 import json
 import time
+import os
+from dotenv import load_dotenv
 from pathlib import Path
 from tqdm import tqdm 
 from openai import OpenAI 
@@ -20,7 +22,7 @@ from src.utils import (
 )
 
 logger = get_logger("extract")
-
+load_dotenv()  # Load environment variables from .env file
 
 def load_extraction_prompt(prompts_dir):
     """Load the triple extraction prompt template."""
@@ -169,7 +171,7 @@ def extract_all_triples(config):
     
     # Initialise OpenAI client
     client = OpenAI(
-        api_key=config["api_keys"]["groq"],
+        api_key=os.getenv("GROQ_API_KEY"),
         base_url="https://api.groq.com/openai/v1"
         )
     
