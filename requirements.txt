@@ -46,3 +46,5 @@ pyyaml>=6.0.1              # YAML config parsing
 # --- Notebooks ---
 jupyter>=1.0.0             # Jupyter notebook support
 ipywidgets>=8.1.0          # Interactive widgets in notebooks
+
+streamlit>=1.25.0           # For building interactive web apps (optional)

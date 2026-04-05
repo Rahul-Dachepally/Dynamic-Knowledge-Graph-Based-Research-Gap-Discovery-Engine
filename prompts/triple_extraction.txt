@@ -51,3 +51,6 @@ RULES:
 - If information is ambiguous, assign confidence < 0.5
 - Do not invent relationships not supported by the text
 - Do not include commentary or explanation outside the JSON
+
+NOTE:
+Pay special attention to extracting LACKS relationships these represent explicitly stated limitations or missing capabilities.

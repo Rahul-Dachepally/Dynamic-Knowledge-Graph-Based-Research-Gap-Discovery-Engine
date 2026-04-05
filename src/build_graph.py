@@ -20,6 +20,10 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from src.utils import get_logger, save_json, load_json, ensure_dir
 
+import os
+os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 logger = get_logger("build_graph")
 
 
@@ -171,6 +175,15 @@ def build_knowledge_graph(config):
     min_conf = graph_config["min_edge_confidence"]
     triples = [t for t in triples if t.get("confidence", 0) >= min_conf]
     logger.info(f"After confidence filter (>={min_conf}): {len(triples)} triples")
+
+    BAD_ENTITIES = {"our method", "the model", "this paper", "our approach", 
+                "the proposed method", "this work", "our framework"}
+    triples = [
+        t for t in triples 
+        if t["subject"]["name"].lower() not in BAD_ENTITIES
+        and t["object"]["name"].lower() not in BAD_ENTITIES
+    ]
+    logger.info(f"After entity filter: {len(triples)} triples")
 
     # Filter out-of-vocabulary relations
     VALID_RELATIONS = {

@@ -8,6 +8,7 @@ Usage:
     python run_pipeline.py --stage extract
 """
 
+from curses import raw
 import json
 import time
 from pathlib import Path
@@ -59,6 +60,8 @@ def extract_triples_from_text(client, model, prompt_template, domain, title, yea
         
         # Validate each triple
         valid_triples = []
+        raw = result.get("triples", [])
+        triples = [t for t in raw if isinstance(t, dict)] 
         for t in triples:
             if (
                 isinstance(t, dict)
