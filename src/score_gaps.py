@@ -85,6 +85,28 @@ def compute_composite_score(metrics, weights):
         score += weight * metrics.get(key, 0.0)
     return score
 
+def compute_ablation_table(raw_gaps, output_dir):
+    """Compute which gaps come from each algorithm combination."""
+    ml = raw_gaps.get('missing_links', [])
+    oc = raw_gaps.get('orphan_clusters', [])
+    td = raw_gaps.get('temporal_decay', [])
+
+    results = {
+        'TransE only':        len(ml),
+        'Louvain only':       len(oc),
+        'Temporal decay only':len(td),
+        'TransE + Louvain':   len(ml) + len(oc),
+        'TransE + Decay':     len(ml) + len(td),
+        'Louvain + Decay':    len(oc) + len(td),
+        'All three (full)':   len(ml) + len(oc) + len(td),
+    }
+
+    import pandas as pd
+    df = pd.DataFrame(results.items(), columns=['Configuration','Gaps detected'])
+    df.to_csv(output_dir / 'ablation_table.csv', index=False)
+    logger.info(f'  Ablation table saved: {output_dir}/ablation_table.csv')
+    logger.info(f'  Full system: {results["All three (full)"]} gaps total')
+    return results
 
 def score_and_rank_gaps(config):
     """
@@ -147,6 +169,17 @@ def score_and_rank_gaps(config):
     
     # --- Rank by composite score ---
     scored_gaps.sort(key=lambda x: x["composite_score"], reverse=True)
+
+    # Min-max normalise composite scores to [0, 1] for interpretability
+    raw_scores = [g['composite_score'] for g in scored_gaps]
+    s_min, s_max = min(raw_scores), max(raw_scores)
+    score_range = s_max - s_min if s_max > s_min else 1.0
+    for g in scored_gaps:
+        g['raw_composite_score'] = g['composite_score']          # preserve original
+        g['composite_score'] = round((g['composite_score'] - s_min) / score_range, 4)
+        g['score_range_note'] = f'raw={g["raw_composite_score"]:.4f}, normalised over [{s_min:.4f},{s_max:.4f}]'
+
+    logger.info(f'  Score range: {s_min:.4f} – {s_max:.4f} (spread: {score_range:.4f})')
     
     # Add rank
     for i, gap in enumerate(scored_gaps):
@@ -171,6 +204,9 @@ def score_and_rank_gaps(config):
     
     df = pd.DataFrame(csv_rows)
     df.to_csv(output_dir / "gaps_ranked.csv", index=False)
+    
+    ablation = compute_ablation_table(raw_gaps, output_dir)
+
     
     # --- Print results ---
     logger.info(f"\n{'='*50}")

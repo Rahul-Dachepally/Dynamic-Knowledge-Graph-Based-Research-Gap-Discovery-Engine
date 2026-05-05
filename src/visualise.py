@@ -18,6 +18,8 @@ from pathlib import Path
 from collections import defaultdict
 from pyvis.network import Network
 from src.utils import get_logger, save_json, load_json, ensure_dir
+import matplotlib.patches as mpatches
+import matplotlib.gridspec as gridspec
 
 logger = get_logger("visualise")
 
@@ -245,6 +247,307 @@ def plot_graph_stats(G, figures_dir):
     plt.close()
     logger.info(f"  Saved: {figures_dir / 'graph_stats.png'}")
 
+# Nodes whose labels should never appear in the paper figure
+BAD_LABELS = {
+    "proposed method", "our method", "the model", "this paper",
+    "our approach", "the proposed method", "this work", "our framework",
+    "proposed approach", "method",
+}
+
+
+def _safe_profile(gap, G):
+    """
+    Return {year_int: count} for a temporal_decay gap.
+
+    Tries three sources in order:
+      1. gap['temporal_profile'] with int keys
+      2. gap['temporal_profile'] with str keys (JSON round-trips them)
+      3. Count edges on the concept node directly from G
+    """
+    profile = gap.get("temporal_profile", {})
+
+    # Source 1 & 2 — stored profile
+    if profile:
+        # normalise keys to int
+        try:
+            return {int(k): int(v) for k, v in profile.items()}
+        except (ValueError, TypeError):
+            pass
+
+    # Source 3 — recompute from graph edges
+    concept = gap.get("concept", "")
+    if not concept or not G.has_node(concept):
+        return {}
+
+    year_counts = defaultdict(int)
+    for u, v, data in G.edges(data=True):
+        if u == concept or v == concept:
+            y = data.get("year")
+            if y:
+                try:
+                    year_counts[int(y)] += 1
+                except (ValueError, TypeError):
+                    pass
+
+    return dict(year_counts)
+
+
+def generate_paper_figure(G, gaps, figures_dir):
+    """
+    Publication-quality three-panel KG figure.
+
+    Panel left  : full knowledge graph (main + gap nodes highlighted)
+    Panel top-r : zoom of the largest orphan cluster
+    Panel bot-r : temporal decay bar chart for top-3 decaying concepts
+    """
+    try:
+        import community as community_louvain
+    except ImportError:
+        import community as community_louvain  # python-louvain
+
+    logger_print = print   # use print so it works even if logger not imported here
+
+    fig = plt.figure(figsize=(18, 10), facecolor="white")
+    gs  = gridspec.GridSpec(
+        2, 3, figure=fig,
+        hspace=0.45, wspace=0.30,
+        left=0.04, right=0.97, top=0.93, bottom=0.07,
+    )
+    ax_main  = fig.add_subplot(gs[:, :2])   # left 2/3
+    ax_zoom  = fig.add_subplot(gs[0, 2])    # top-right
+    ax_decay = fig.add_subplot(gs[1, 2])    # bottom-right
+
+    # ── collect gap nodes ────────────────────────────────────────
+    gap_nodes = set()
+    for gap in gaps:
+        if gap["type"] == "orphan_cluster":
+            gap_nodes.update(gap.get("members", [])[:15])
+        elif gap["type"] == "temporal_decay":
+            gap_nodes.add(gap.get("concept", ""))
+        elif gap["type"] == "missing_link":
+            gap_nodes.add(gap.get("head", ""))
+            gap_nodes.add(gap.get("tail", ""))
+    gap_nodes.discard("")
+
+    # ── build simple DiGraph for layout ─────────────────────────
+    G_simple = nx.DiGraph(G)
+
+    # ── layout ──────────────────────────────────────────────────
+    try:
+        # kamada_kawai gives nicer spacing when graph is not too sparse
+        if G_simple.number_of_edges() > 10:
+            pos = nx.kamada_kawai_layout(G_simple)
+        else:
+            pos = nx.spring_layout(G_simple, seed=42, k=2.8)
+    except Exception:
+        pos = nx.spring_layout(G_simple, seed=42, k=2.8)
+
+    # ── node styling ─────────────────────────────────────────────
+    node_list   = list(G_simple.nodes())
+    node_colors = [TYPE_COLORS.get(G.nodes[n].get("type", "UNKNOWN"), "#888") for n in node_list]
+    node_sizes  = []
+    for n in node_list:
+        cent = G.nodes[n].get("degree_centrality", 0.01)
+        base = 300 if n in gap_nodes else 120
+        node_sizes.append(max(base, min(900, cent * 4000)))
+
+    # ── draw edges ───────────────────────────────────────────────
+    nx.draw_networkx_edges(
+        G_simple, pos, ax=ax_main,
+        edge_color="#CCCCCC", width=0.7, alpha=0.5,
+        arrows=True, arrowsize=10,
+        connectionstyle="arc3,rad=0.05",
+    )
+
+    # ── draw normal nodes ─────────────────────────────────────────
+    nx.draw_networkx_nodes(
+        G_simple, pos, ax=ax_main,
+        node_color=node_colors, node_size=node_sizes, alpha=0.92,
+    )
+
+    # ── red ring around gap nodes ─────────────────────────────────
+    gap_present = [n for n in node_list if n in gap_nodes]
+    if gap_present:
+        gap_sizes = [node_sizes[node_list.index(n)] + 120 for n in gap_present]
+        nx.draw_networkx_nodes(
+            G_simple, pos, ax=ax_main,
+            nodelist=gap_present,
+            node_color="none", node_size=gap_sizes,
+            edgecolors="#E24B4A", linewidths=2.2,
+        )
+
+    # ── labels: only high-centrality and non-junk nodes ──────────
+    label_nodes = {
+        n: n for n in node_list
+        if (G.nodes[n].get("degree_centrality", 0) > 0.04
+            or n in gap_nodes)
+        and n.lower() not in BAD_LABELS
+    }
+    # truncate long labels
+    label_nodes = {
+        n: (lab[:24] + "…" if len(lab) > 24 else lab)
+        for n, lab in label_nodes.items()
+    }
+    nx.draw_networkx_labels(
+        G_simple, pos, labels=label_nodes, ax=ax_main,
+        font_size=6.5, font_color="#1F2937",
+    )
+
+    ax_main.set_title(
+        f"Full knowledge graph ({G.number_of_nodes()} nodes, {G.number_of_edges()} edges)",
+        fontsize=11, pad=8,
+    )
+    ax_main.axis("off")
+
+    # ── legend ───────────────────────────────────────────────────
+    handles = [
+        mpatches.Patch(color=v, label=k)
+        for k, v in TYPE_COLORS.items() if k != "UNKNOWN"
+    ]
+    handles.append(
+        mpatches.Patch(
+            edgecolor="#E24B4A", facecolor="none",
+            label="Gap node", linewidth=2,
+        )
+    )
+    ax_main.legend(
+        handles=handles, loc="lower left", fontsize=7,
+        ncol=2, framealpha=0.85,
+    )
+
+    # ── Panel 2: Orphan cluster zoom ─────────────────────────────
+    orphan_gaps = [g for g in gaps if g["type"] == "orphan_cluster"]
+    if orphan_gaps:
+        biggest = max(orphan_gaps, key=lambda x: x.get("size", 0))
+        members = [m for m in biggest.get("members", []) if G_simple.has_node(m)]
+
+        if len(members) >= 2:
+            sub     = G_simple.subgraph(members)
+            sub_pos = nx.spring_layout(sub, seed=7, k=3.0)
+
+            sub_colors = [
+                TYPE_COLORS.get(G.nodes[n].get("type", "UNKNOWN"), "#888")
+                for n in sub.nodes()
+            ]
+            nx.draw_networkx_edges(
+                sub, sub_pos, ax=ax_zoom,
+                edge_color="#AAAAAA", width=1.0, alpha=0.7,
+                arrows=True, arrowsize=10,
+            )
+            nx.draw_networkx_nodes(
+                sub, sub_pos, ax=ax_zoom,
+                node_color=sub_colors, node_size=220, alpha=0.92,
+            )
+            # truncated labels to avoid clipping
+            sub_labels = {
+                n: (n[:20] + "…" if len(n) > 20 else n)
+                for n in sub.nodes()
+            }
+            nx.draw_networkx_labels(
+                sub, sub_pos, labels=sub_labels, ax=ax_zoom,
+                font_size=6.5, font_color="#1F2937", clip_on=False,
+            )
+            ax_zoom.set_title(
+                f"Orphan cluster #{biggest['community_id']}\n"
+                f"({biggest['size']} nodes, "
+                f"{biggest['inter_edge_ratio']:.0%} bridge edges)",
+                fontsize=9, pad=6,
+            )
+        else:
+            ax_zoom.text(
+                0.5, 0.5, "Cluster too small\nto visualise",
+                ha="center", va="center", transform=ax_zoom.transAxes,
+                fontsize=9, color="#6B7280",
+            )
+            ax_zoom.set_title("Orphan cluster", fontsize=9)
+    else:
+        ax_zoom.text(
+            0.5, 0.5, "No orphan clusters\ndetected",
+            ha="center", va="center", transform=ax_zoom.transAxes,
+            fontsize=9, color="#6B7280",
+        )
+        ax_zoom.set_title("Orphan cluster", fontsize=9)
+
+    ax_zoom.axis("off")
+
+    # ── Panel 3: Temporal decay bar chart ────────────────────────
+    decay_gaps = sorted(
+        [g for g in gaps if g["type"] == "temporal_decay"],
+        key=lambda x: x.get("decay_rate", 0),
+        reverse=True,
+    )[:3]
+
+    if decay_gaps:
+        # collect all years present across the three concepts
+        all_profiles = [_safe_profile(g, G) for g in decay_gaps]
+        all_years    = sorted({y for p in all_profiles for y in p.keys()})
+
+        if all_years:
+            bar_w   = 0.25
+            colors  = ["#D85A30", "#BA7517", "#7F77DD"]
+            xs_base = list(range(len(all_years)))
+
+            plotted = 0
+            for j, (dg, profile) in enumerate(zip(decay_gaps, all_profiles)):
+                if not profile:
+                    continue
+                vals = [profile.get(y, 0) for y in all_years]
+                xs   = [x + j * bar_w for x in xs_base]
+                ax_decay.bar(
+                    xs, vals, width=bar_w,
+                    color=colors[j % len(colors)], alpha=0.85,
+                    label=dg["concept"][:22],
+                )
+                plotted += 1
+
+            if plotted > 0:
+                tick_xs = [x + bar_w for x in xs_base]
+                ax_decay.set_xticks(tick_xs)
+                ax_decay.set_xticklabels(
+                    [str(y) for y in all_years],
+                    fontsize=7, rotation=45, ha="right",
+                )
+                ax_decay.set_ylabel("Edge count", fontsize=8)
+                ax_decay.set_title(
+                    "Temporal decay — top stalled concepts", fontsize=9, pad=6,
+                )
+                ax_decay.legend(fontsize=7, loc="upper right")
+                ax_decay.tick_params(axis="y", labelsize=7)
+                ax_decay.yaxis.get_major_locator().set_params(integer=True)
+            else:
+                ax_decay.text(
+                    0.5, 0.5,
+                    "Temporal profiles not stored\n(run pipeline to regenerate)",
+                    ha="center", va="center", transform=ax_decay.transAxes,
+                    fontsize=8, color="#6B7280",
+                )
+                ax_decay.set_title("Temporal decay", fontsize=9)
+        else:
+            ax_decay.text(
+                0.5, 0.5,
+                "No year data on edges\n(check source_year in triples)",
+                ha="center", va="center", transform=ax_decay.transAxes,
+                fontsize=8, color="#6B7280",
+            )
+            ax_decay.set_title("Temporal decay", fontsize=9)
+    else:
+        ax_decay.text(
+            0.5, 0.5, "No temporal decay\ngaps detected",
+            ha="center", va="center", transform=ax_decay.transAxes,
+            fontsize=9, color="#6B7280",
+        )
+        ax_decay.set_title("Temporal decay", fontsize=9)
+
+    # ── save ─────────────────────────────────────────────────────
+    out_path = Path(figures_dir) / "figure4_kg_publication.png"
+    plt.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close()
+    logger_print(f"  Saved publication figure: {out_path}")
+    return out_path
+
+
+
+
 
 def generate_visualisations(config):
     """Main visualisation function."""
@@ -278,11 +581,15 @@ def generate_visualisations(config):
         plot_gap_distribution(gaps, figures_dir)
         plot_temporal_profile(gaps, figures_dir)
     
+    generate_paper_figure(G, gaps, figures_dir)
+    
     logger.info(f"\n{'='*50}")
     logger.info(f"  VISUALISATION COMPLETE")
     logger.info(f"{'='*50}")
     logger.info(f"  Interactive graph: {output_dir / 'graph_viz.html'}")
     logger.info(f"  Charts: {figures_dir}")
+
+
 
 
 if __name__ == "__main__":

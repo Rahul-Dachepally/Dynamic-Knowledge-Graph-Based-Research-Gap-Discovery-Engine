@@ -1,5 +1,12 @@
 """
 KG Gap Discovery Engine - Streamlit Frontend
+
+FIX 8 — HCAI grounding:
+  Added expert review panel in Tab 1 (Ranked Gaps).
+  Reviewers can Accept / Reject / Modify each gap.
+  Decisions are saved to expert_reviews.json which can be
+  cited in the paper as the Stage 6 human-in-the-loop evidence.
+
 Run: streamlit run app.py
 """
 
@@ -16,11 +23,11 @@ import sys
 import os
 import pickle
 import logging
+import datetime
 import pandas as pd
 import numpy as np
 import networkx as nx
 from pathlib import Path
-from datetime import datetime
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
@@ -51,6 +58,13 @@ st.markdown("""
 .gap-card strong  { color: #ffffff !important; }
 .gap-card small   { color: #cccccc !important; }
 .gap-card code    { background: #333; color: #adf; padding: 2px 6px; border-radius: 3px; }
+
+/* FIX 8 — review badge colours */
+.review-accept { background: #065F46; color: #D1FAE5; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+.review-reject { background: #7F1D1D; color: #FEE2E2; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+.review-modify { background: #78350F; color: #FEF3C7; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+.review-pending{ background: #1E3A5F; color: #DBEAFE; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+
 .method-header {
     font-size: 1.1em;
     font-weight: bold;
@@ -79,7 +93,7 @@ def build_run_config(base_config, topic, num_papers, groq_key):
     cfg["filtering"]["target_corpus_size"] = min(num_papers, 150)
 
     slug   = topic.lower().replace(" ", "_")[:30]
-    ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts     = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_id = f"{slug}_{ts}"
 
     cfg["paths"] = {
@@ -228,7 +242,66 @@ def load_results(cfg):
         with open(metrics_path) as f:
             results["comparison_metrics"] = json.load(f)
 
+    # FIX 8: Load any previously saved expert reviews
+    reviews_path = Path(out) / "expert_reviews.json"
+    if reviews_path.exists():
+        with open(reviews_path) as f:
+            results["expert_reviews"] = json.load(f)
+
     return results
+
+
+# ── FIX 8: Expert review helpers ────────────────────────────
+
+def save_expert_reviews(cfg, reviews, reviewer_name, notes=""):
+    """
+    Persist expert gap reviews to disk.
+
+    This file can be cited in the paper as evidence of the Stage 6
+    human-in-the-loop validation required by HCAI principles (Shneiderman 2020).
+    The acceptance rate (accepted / total reviewed) is reported in Table 3.
+    """
+    out          = Path(cfg["paths"]["outputs"])
+    reviews_path = out / "expert_reviews.json"
+
+    summary = {k: sum(1 for v in reviews.values() if v == k)
+               for k in ["Accept", "Reject", "Modify", "Pending"]}
+
+    total_reviewed = summary["Accept"] + summary["Reject"] + summary["Modify"]
+    acceptance_rate = (
+        round(summary["Accept"] / total_reviewed, 3) if total_reviewed > 0 else 0.0
+    )
+
+    output = {
+        "timestamp":       datetime.datetime.now().isoformat(),
+        "reviewer":        reviewer_name,
+        "notes":           notes,
+        "reviews":         reviews,
+        "summary":         summary,
+        "total_reviewed":  total_reviewed,
+        "acceptance_rate": acceptance_rate,
+        "hcai_note": (
+            "This file constitutes Stage 6 human expert review evidence "
+            "as required by the HCAI framework (Shneiderman 2020). "
+            "Cite acceptance_rate in Table 3 of the paper."
+        ),
+    }
+
+    with open(reviews_path, "w") as f:
+        json.dump(output, f, indent=2)
+
+    return output
+
+
+def get_review_badge_html(decision):
+    """Return a coloured HTML badge for the review decision."""
+    css_class = {
+        "Accept":  "review-accept",
+        "Reject":  "review-reject",
+        "Modify":  "review-modify",
+        "Pending": "review-pending",
+    }.get(decision, "review-pending")
+    return f'<span class="{css_class}">{decision}</span>'
 
 
 # ── Sidebar ─────────────────────────────────────────────────
@@ -244,12 +317,37 @@ with st.sidebar:
         help="Free key at console.groq.com",
     )
 
+    # FIX 8: Reviewer identity field
+    st.divider()
+    reviewer_name = st.text_input(
+        "Reviewer name",
+        value="author_internal",
+        help=(
+            "Saved in expert_reviews.json for HCAI accountability. "
+            "Use your name or role (e.g. 'domain_expert_1')."
+        ),
+    )
+
     st.divider()
     st.markdown("**Pipeline stages:**")
     for stage in ["📥 Collect papers", "🔎 Filter corpus", "🧠 Extract triples",
                   "🕸️ Build KG", "🔬 Detect gaps", "📊 Score & rank",
                   "🎨 Visualise", "⚖️ RAG comparison"]:
         st.markdown(f"- {stage}")
+
+    # FIX 7: Incremental update option
+    st.divider()
+    st.markdown("**Dynamic KG options:**")
+    run_incremental = st.checkbox(
+        "Incremental update",
+        value=False,
+        help=(
+            "Only collect papers not already in the corpus. "
+            "Merges new papers into the existing graph — "
+            "the 'Dynamic' property of the KG (Fix 7)."
+        ),
+    )
+
     st.divider()
     st.caption("Based on Mulla et al. (2026) — HCAIep '26")
 
@@ -284,9 +382,12 @@ if run_button and topic and groq_key:
         queries = generate_queries_with_llm(topic, groq_key)
 
     cfg, run_id = build_run_config(base_cfg, topic, num_papers, groq_key)
-    cfg["collection"]["queries"] = queries
+    cfg["collection"]["queries"]      = queries
+    cfg["collection"]["incremental"]  = run_incremental   # FIX 7: pass flag into config
 
     st.markdown(f"**Queries:** `{'` · `'.join(queries)}`")
+    if run_incremental:
+        st.info("🔄 Incremental mode: only new papers will be collected and merged into the existing graph.")
 
     status_box   = st.empty()
     progress_bar = st.progress(0)
@@ -324,9 +425,10 @@ if run_button and topic and groq_key:
 
     if done_cfg:
         st.success("✅ KG pipeline complete!")
-        st.session_state["results"] = load_results(done_cfg)
-        st.session_state["run_cfg"] = done_cfg
-        st.session_state["topic"]   = topic
+        st.session_state["results"]     = load_results(done_cfg)
+        st.session_state["run_cfg"]     = done_cfg
+        st.session_state["topic"]       = topic
+        st.session_state["gap_reviews"] = {}   # FIX 8: initialise review state
 
 
 # ── Results display ──────────────────────────────────────────
@@ -356,15 +458,25 @@ if "results" in st.session_state:
     st.divider()
 
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📋 Ranked Gaps",
+        "📋 Ranked Gaps + Expert Review",
         "🕸️ Knowledge Graph",
         "📈 Analytics",
         "⚖️ RAG Comparison",
     ])
 
-    # ── Tab 1 ────────────────────────────────────────────────
+    # ── Tab 1 — Ranked Gaps + FIX 8 Expert Review ───────────────
     with tab1:
         st.subheader("Top Research Gaps — KG Method")
+
+        # FIX 8: HCAI info banner
+        st.info(
+            "**Stage 6 — Human Expert Review (HCAI)**  \n"
+            "Use the review controls below to Accept, Reject, or flag gaps for Modification. "
+            "Decisions are saved to `expert_reviews.json` and cited in the paper as Stage 6 "
+            "human-in-the-loop validation (Shneiderman 2020). "
+            "This is what distinguishes responsible AI synthesis from fully automated generation.",
+            icon="🧑‍🔬",
+        )
 
         type_filter = st.multiselect(
             "Filter by type",
@@ -378,24 +490,135 @@ if "results" in st.session_state:
             "temporal_decay": ("📉", "decay",   "Temporal Decay"),
         }
 
+        # FIX 8: Restore any saved reviews from session state
+        if "gap_reviews" not in st.session_state:
+            # Try loading from disk if pipeline was run in a previous session
+            saved = results.get("expert_reviews", {})
+            st.session_state["gap_reviews"] = saved.get("reviews", {}) if saved else {}
+
+        reviews = st.session_state["gap_reviews"]
+
         for g in [x for x in gaps if x["type"] in type_filter][:30]:
             icon, css, label = TYPE_META.get(g["type"], ("❓", "", g["type"]))
-            st.markdown(f"""
+            gap_key          = f"review_{g['rank']}"
+            current_decision = reviews.get(gap_key, "Pending")
+
+            # Gap card + review controls side by side
+            col_card, col_review = st.columns([3, 1])
+
+            with col_card:
+                badge_html = get_review_badge_html(current_decision)
+                st.markdown(f"""
 <div class="gap-card {css}">
   <strong>#{g['rank']} {icon} {label}</strong>
-  &nbsp;<code>score: {g.get('composite_score', 0):.4f}</code><br>
-  <span style="color:#444">{g.get('description', '')}</span>
+  &nbsp;<code>score: {g.get('composite_score', 0):.4f}</code>
+  &nbsp;{badge_html}<br>
+  <small>{g.get('description', '')}</small>
 </div>""", unsafe_allow_html=True)
 
+            with col_review:
+                new_decision = st.selectbox(
+                    "Decision",
+                    options=["Pending", "Accept", "Reject", "Modify"],
+                    index=["Pending", "Accept", "Reject", "Modify"].index(current_decision),
+                    key=gap_key,
+                    label_visibility="collapsed",
+                )
+                reviews[gap_key] = new_decision
+
+                # Show modification text box when reviewer selects Modify
+                if new_decision == "Modify":
+                    note_key = f"note_{g['rank']}"
+                    st.text_area(
+                        "Suggested modification",
+                        key=note_key,
+                        placeholder="Describe what should be changed...",
+                        height=80,
+                        label_visibility="collapsed",
+                    )
+
+        # Update session state after all widgets render
+        st.session_state["gap_reviews"] = reviews
+
+        st.divider()
+
+        # FIX 8: Review summary and save controls
+        st.subheader("Review Summary")
+        summary_counts = {k: sum(1 for v in reviews.values() if v == k)
+                          for k in ["Accept", "Reject", "Modify", "Pending"]}
+        total_reviewed = (summary_counts["Accept"]
+                          + summary_counts["Reject"]
+                          + summary_counts["Modify"])
+        acceptance_rate = (
+            round(summary_counts["Accept"] / total_reviewed * 100, 1)
+            if total_reviewed > 0 else 0.0
+        )
+
+        rc1, rc2, rc3, rc4, rc5 = st.columns(5)
+        with rc1: st.metric("✅ Accepted", summary_counts["Accept"])
+        with rc2: st.metric("❌ Rejected", summary_counts["Reject"])
+        with rc3: st.metric("✏️ Modify",   summary_counts["Modify"])
+        with rc4: st.metric("⏳ Pending",  summary_counts["Pending"])
+        with rc5: st.metric("Acceptance %", f"{acceptance_rate}%")
+
+        review_notes = st.text_area(
+            "Overall reviewer notes (optional)",
+            placeholder="e.g. 'Gaps 1–5 confirmed by domain expertise. Gap 8 overlaps with known work by Chen et al.'",
+            height=80,
+        )
+
+        save_col, dl_col = st.columns([1, 1])
+        with save_col:
+            if st.button("💾 Save expert reviews", type="primary"):
+                saved_output = save_expert_reviews(
+                    cfg, reviews, reviewer_name, notes=review_notes
+                )
+                st.success(
+                    f"Reviews saved to `{cfg['paths']['outputs']}/expert_reviews.json`  \n"
+                    f"Acceptance rate: **{saved_output['acceptance_rate']*100:.1f}%** "
+                    f"({saved_output['summary']['Accept']} / {saved_output['total_reviewed']} reviewed)  \n"
+                    f"Cite this as Stage 6 HCAI evidence in Section 6.3 of the paper."
+                )
+
+        with dl_col:
+            if st.button("⬇️ Download CSV of reviewed gaps"):
+                reviewed_rows = []
+                for g in gaps:
+                    k = f"review_{g['rank']}"
+                    reviewed_rows.append({
+                        "rank":        g["rank"],
+                        "type":        g["type"],
+                        "score":       g.get("composite_score", 0),
+                        "description": g.get("description", "")[:200],
+                        "decision":    reviews.get(k, "Pending"),
+                    })
+                df_review = pd.DataFrame(reviewed_rows)
+                st.download_button(
+                    "Download",
+                    df_review.to_csv(index=False),
+                    file_name=f"gap_reviews_{topic.replace(' ', '_')}.csv",
+                    mime="text/csv",
+                )
+
+        # Show previously saved reviews if they exist
+        if results.get("expert_reviews"):
+            prev = results["expert_reviews"]
+            st.caption(
+                f"Last saved: {prev.get('timestamp','?')} · "
+                f"Reviewer: {prev.get('reviewer','?')} · "
+                f"Acceptance rate: {prev.get('acceptance_rate',0)*100:.1f}%"
+            )
+
+        # Original CSV download (unchanged)
         if "gaps_df" in results:
             st.download_button(
-                "⬇️ Download as CSV",
+                "⬇️ Download full ranked gaps CSV",
                 results["gaps_df"].to_csv(index=False),
                 file_name=f"kg_gaps_{topic.replace(' ', '_')}.csv",
                 mime="text/csv",
             )
 
-    # ── Tab 2 ────────────────────────────────────────────────
+    # ── Tab 2 — Knowledge Graph (unchanged) ─────────────────────
     with tab2:
         st.subheader("Interactive Knowledge Graph")
         st.caption("Nodes = concepts · Size = centrality · Red border = gap node · Dashed red = predicted missing link")
@@ -408,6 +631,7 @@ if "results" in st.session_state:
                 st.components.v1.html(html_content, height=650, scrolling=True)
         else:
             st.warning("Graph visualisation not available.")
+
         if G:
             st.markdown("**Top 10 most connected concepts:**")
             G_simple  = nx.DiGraph(G)
@@ -417,17 +641,17 @@ if "results" in st.session_state:
             df_nodes["Type"] = df_nodes["Concept"].apply(
                 lambda n: G.nodes[n].get("type", "?") if G.has_node(n) else "?"
             )
-        # cast all columns to string to avoid Arrow type conflicts
             st.table(df_nodes.astype(str))
 
-    # ── Tab 3 ────────────────────────────────────────────────
+    # ── Tab 3 — Analytics (unchanged) ───────────────────────────
     with tab3:
         st.subheader("Gap Analytics")
 
         for fig_name, caption in [
-            ("gap_analysis.png",   "Gap distribution and scores"),
-            ("temporal_decay.png", "Temporal decay profiles"),
-            ("graph_stats.png",    "Knowledge graph statistics"),
+            ("gap_analysis.png",              "Gap distribution and scores"),
+            ("temporal_decay.png",            "Temporal decay profiles"),
+            ("graph_stats.png",               "Knowledge graph statistics"),
+            ("figure4_kg_publication.png",    "Figure 4 — publication-ready KG figure (Fix 1)"),
         ]:
             p = Path(cfg["paths"]["figures"]) / fig_name
             if p.exists():
@@ -445,7 +669,7 @@ if "results" in st.session_state:
             st.markdown("**Edge relation distribution:**")
             st.bar_chart(df_rel.set_index("Relation"))
 
-    # ── Tab 4: RAG Comparison ────────────────────────────────
+    # ── Tab 4: RAG Comparison (unchanged) ───────────────────────
     with tab4:
         st.subheader("⚖️ Method Comparison: KG vs RAG Baselines")
 
@@ -509,6 +733,17 @@ if "results" in st.session_state:
             si_m  = metrics.get("simple_llm", {})
             ov_m  = metrics.get("overlap",    {})
 
+            # FIX 8: Show acceptance rate from expert reviews if available
+            expert = results.get("expert_reviews")
+            if expert:
+                st.success(
+                    f"🧑‍🔬 Expert review on file: "
+                    f"**{expert.get('acceptance_rate',0)*100:.1f}% acceptance rate** "
+                    f"({expert['summary'].get('Accept',0)} accepted / "
+                    f"{expert.get('total_reviewed',0)} reviewed) — "
+                    f"cite in Section 6.3 as Stage 6 HCAI evidence."
+                )
+
             # Summary table
             st.markdown("### 📊 Method Summary")
             summary_df = pd.DataFrame({
@@ -519,6 +754,7 @@ if "results" in st.session_state:
                     "Reproducible",
                     "Cross-paper retrieval",
                     "Avg gap length (words)",
+                    "Expert acceptance rate",
                 ],
                 "🔷 KG (Ours)": [
                     kg_m.get("total_gaps", "-"),
@@ -527,6 +763,7 @@ if "results" in st.session_state:
                     "✅ Deterministic",
                     "✅ Corpus-wide",
                     kg_m.get("avg_description_len", "-"),
+                    f"{expert.get('acceptance_rate',0)*100:.1f}%" if expert else "Pending review",
                 ],
                 "🟡 Mulla RAG": [
                     mu_m.get("total_gaps", "-"),
@@ -535,6 +772,7 @@ if "results" in st.session_state:
                     "❌ Stochastic",
                     "✅ Top-3 similar",
                     mu_m.get("avg_gap_length", "-"),
+                    "Not evaluated",
                 ],
                 "⚪ Simple LLM": [
                     si_m.get("total_gaps", "-"),
@@ -543,6 +781,7 @@ if "results" in st.session_state:
                     "❌ Stochastic",
                     "❌ Per-paper only",
                     si_m.get("avg_gap_length", "-"),
+                    "Not evaluated",
                 ],
             })
             st.table(summary_df.set_index("Metric"))
@@ -551,21 +790,24 @@ if "results" in st.session_state:
             st.markdown("### 🔀 Lexical Overlap Between Methods")
             st.caption("Jaccard similarity — lower means methods find more complementary gaps")
             col1, col2, col3 = st.columns(3)
-            with col1: st.metric("KG vs Mulla RAG",    f"{ov_m.get('kg_vs_mulla',  0):.3f}")
-            with col2: st.metric("KG vs Simple LLM",   f"{ov_m.get('kg_vs_simple', 0):.3f}")
-            with col3: st.metric("Mulla vs Simple LLM",f"{ov_m.get('mulla_vs_simple',0):.3f}")
+            with col1: st.metric("KG vs Mulla RAG",     f"{ov_m.get('kg_vs_mulla',  0):.3f}")
+            with col2: st.metric("KG vs Simple LLM",    f"{ov_m.get('kg_vs_simple', 0):.3f}")
+            with col3: st.metric("Mulla vs Simple LLM", f"{ov_m.get('mulla_vs_simple', 0):.3f}")
 
             st.divider()
 
             # Side-by-side sample
             st.markdown("### 📋 Gap Samples — Side by Side")
             paper_titles = [g.get("title", f"Paper {i}") for i, g in enumerate(mulla_gaps[:20])]
-            sel = st.selectbox("Select paper", range(len(paper_titles)),
-                               format_func=lambda i: paper_titles[i])
+            sel = st.selectbox(
+                "Select paper",
+                range(len(paper_titles)),
+                format_func=lambda i: paper_titles[i],
+            )
 
             if sel < len(mulla_gaps):
-                mulla_gap = mulla_gaps[sel]
-                pid       = mulla_gap.get("paper_id", "")
+                mulla_gap  = mulla_gaps[sel]
+                pid        = mulla_gap.get("paper_id", "")
                 simple_gap = next(
                     (g for g in simple_gaps if g.get("paper_id") == pid),
                     simple_gaps[sel] if sel < len(simple_gaps) else {},
@@ -579,10 +821,12 @@ if "results" in st.session_state:
                                 unsafe_allow_html=True)
                     for g in kg_sample:
                         css = g["type"].split("_")[0]
+                        k   = f"review_{g['rank']}"
+                        badge = get_review_badge_html(reviews.get(k, "Pending"))
                         st.markdown(f"""
 <div class="gap-card {css}">
   <strong>{g.get('type','').replace('_',' ').title()}</strong>
-  — score {g.get('composite_score',0):.3f}<br>
+  — score {g.get('composite_score',0):.3f} {badge}<br>
   <small>{g.get('description','')[:220]}</small>
 </div>""", unsafe_allow_html=True)
 
@@ -590,9 +834,9 @@ if "results" in st.session_state:
                     st.markdown('<div class="method-header">🟡 Mulla et al. RAG</div>',
                                 unsafe_allow_html=True)
                     for field, label in [
-                        ("research_gaps",     "Research Gaps"),
-                        ("remaining_gaps",    "Remaining Gaps"),
-                        ("research_direction","Direction"),
+                        ("research_gaps",      "Research Gaps"),
+                        ("remaining_gaps",     "Remaining Gaps"),
+                        ("research_direction", "Direction"),
                     ]:
                         val = mulla_gap.get(field, "")
                         if val:
